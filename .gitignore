@@ -1,0 +1,30 @@
+# LTSpice simulation outputs and large binary data files
+*.raw
+*.op.raw
+*.log
+*.net
+*.fft
+*.meas
+*.measlog
+*.cir
+
+# LTSpice backup and auto-save files
+*.bak
+*.bak0
+*.bak1
+*.bak2
+* - Copy*
+
+# OS specific files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Python bytecode and temporary files
+__pycache__/
+*.py[cod]
+*$py.class
