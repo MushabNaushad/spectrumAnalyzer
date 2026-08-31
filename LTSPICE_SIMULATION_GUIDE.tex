@@ -1,0 +1,234 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{hyperref}
+\usepackage{fancyhdr}
+\usepackage{enumitem}
+\usepackage{tcolorbox}
+\usepackage{titlesec}
+
+% Colors
+\definecolor{primary}{RGB}{24, 76, 120}
+\definecolor{secondary}{RGB}{192, 57, 43}
+\definecolor{accent}{RGB}{39, 174, 96}
+\definecolor{darkgray}{RGB}{44, 62, 80}
+\definecolor{lightgray}{RGB}{245, 247, 250}
+\definecolor{codebg}{RGB}{240, 243, 246}
+
+% Listings setup for SPICE
+\lstdefinelanguage{SPICE}{
+  morekeywords={ac, tran, step, param, meas, model, param, temp, include, subckt, ends, dec, lin, oct},
+  sensitive=false,
+  morecomment=[l]{*},
+  morecomment=[l]{;},
+  morestring=[b]",
+}
+
+\lstset{
+  language=SPICE,
+  backgroundcolor=\color{codebg},
+  basicstyle=\ttfamily\small\color{darkgray},
+  keywordstyle=\bfseries\color{primary},
+  commentstyle=\itshape\color{gray},
+  stringstyle=\color{secondary},
+  frame=single,
+  rulecolor=\color{lightgray},
+  breaklines=true,
+  showstringspaces=false,
+  tabsize=2,
+  captionpos=b
+}
+
+% Header & Footer
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\color{gray}\small Discrete Superheterodyne Spectrum Analyzer}
+\fancyhead[R]{\color{gray}\small LTSpice Simulation \& Implementation Guide}
+\fancyfoot[C]{\color{gray}\thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+\renewcommand{\headrule}{\hbox to\headwidth{\color{lightgray}\leaders\hrule height \headrulewidth\hfill}}
+
+% Section styling
+\titleformat{\section}{\Large\bfseries\color{primary}}{\thesection}{1em}{}[\titlerule]
+\titleformat{\subsection}{\large\bfseries\color{darkgray}}{\thesubsection}{1em}{}
+\titleformat{\subsubsection}{\normalsize\bfseries\color{darkgray}}{\thesubsubsection}{1em}{}
+
+% Hyperref setup
+\hypersetup{
+    colorlinks=true,
+    linkcolor=primary,
+    urlcolor=primary,
+    citecolor=secondary
+}
+
+\title{
+    \vspace{-1.5cm}
+    {\Huge\bfseries\color{primary} Discrete Superheterodyne Spectrum Analyzer}\\[0.3cm]
+    {\Large\color{darkgray} Comprehensive Circuit Implementation \& LTSpice Simulation Guide}
+}
+\author{\textbf{System Design \& Simulation Plan}}
+\date{August 31, 2026}
+
+\begin{document}
+
+\maketitle
+\thispagestyle{fancy}
+
+\begin{tcolorbox}[colback=lightgray,colframe=primary,title=\textbf{Project Overview \& Scope}]
+\textbf{Target Architecture:} Swept Superheterodyne Spectrum Analyzer\\
+\textbf{Input Frequency Range:} 0 to 30~kHz (Audio to Low-Ultrasound)\\
+\textbf{Intermediate Frequencies (IF):} 25~kHz (Channel 2) and 35~kHz (Channel 3)\\
+\textbf{Resolution Bandwidth (RBW):} 200~Hz ($Q \approx 125$ to $175$)\\
+\textbf{Core Hardware:} TL072 Dual JFET Op-Amps, 2N2222 Transistors, 2N3904 Transistors, 1N4148 Diodes
+\end{tcolorbox}
+
+\section{System Architecture \& Signal Chain}
+
+The instrument follows the classic swept superheterodyne architecture. An incoming RF signal is buffered, mixed down to a fixed intermediate frequency (IF) via a swept local oscillator (LO), filtered through high-$Q$ bandpass stages, envelope detected, smoothed via a video bandwidth (VBW) filter, and displayed against the LO sweep ramp ($X$-axis):
+
+\begin{center}
+\fbox{RF Input} $\longrightarrow$ \fbox{Preamp / Attenuator} $\longrightarrow$ \fbox{2N2222 Gilbert Mixer} $\longrightarrow$ \fbox{Active IF Filter Bank} $\longrightarrow$ \fbox{Envelope Detector} $\longrightarrow$ \fbox{VBW Filter} $\longrightarrow$ \textbf{Y-OUT}\\
+\vspace{0.2cm}
+\hspace{4.2cm} $\uparrow$\\
+\hspace{3.4cm} \fbox{Sawtooth VCO (LO)} $\longrightarrow$ \textbf{X-OUT (Tuning Ramp)}
+\end{center}
+
+\section{Block-by-Block Circuit Implementation}
+
+\subsection{Block 1: RF Input Preamp \& Scaling Buffer}
+\begin{itemize}[leftmargin=*]
+    \item \textbf{Function:} Provides high input impedance ($1\text{ M}\Omega$), AC coupling, and selectable gain ($1\times, 10\times$) to scale audio signals (10~mV to 1~V$_{\text{rms}}$) to optimal mixer levels ($0.5\text{ to } 1.0\text{ V}_{\text{pp}}$).
+    \item \textbf{Op-Amp:} TL072 JFET-input op-amp on $\pm 12\text{V}$ (or $\pm 9\text{V}$) rails.
+    \item \textbf{Component Values:} $C_{\text{in}} = 1.0\,\mu\text{F}$, $R_{\text{in}} = 100\,\Omega$, $R_{\text{bias}} = 1.0\text{ M}\Omega$, $R_f = 9.0\text{ k}\Omega$, $R_g = 1.0\text{ k}\Omega$, $C_{\text{out}} = 1.0\,\mu\text{F}$.
+\end{itemize}
+
+\subsection{Block 2: Discrete Gilbert Cell Four-Quadrant Mixer}
+\begin{itemize}[leftmargin=*]
+    \item \textbf{Function:} Multiplies the RF signal with the sweeping LO to produce sum ($f_{\text{LO}} + f_{\text{RF}}$) and difference ($|f_{\text{LO}} - f_{\text{RF}}|$) products.
+    \item \textbf{Topology:} 6-transistor active Gilbert cell using 2N2222 NPN BJTs with resistive bias ladder.
+    \item \textbf{Biasing Ladder (from +12V rail):} $R_1 = 3.3\text{ k}\Omega$, $R_2 = 2.2\text{ k}\Omega$, $R_4 = 2.2\text{ k}\Omega$, $R_3 = 1.5\text{ k}\Omega$.
+    \item \textbf{Current Tail \& Loads:} $R_{\text{tail}} = 390\,\Omega$ on $Q_{\text{Tail}}$, $R_{\text{load1}} = R_{\text{load2}} = 2.2\text{ k}\Omega$.
+    \item \textbf{Decoupling \& Coupling:} $C_1, C_2, C_3 = 10\,\mu\text{F}$; LO coupling $C_4, C_5 = 100\text{ nF}$.
+\end{itemize}
+
+\subsection{Block 3: Active IF Bandpass Filter Bank}
+\subsubsection{Channel 2: 25~kHz Sallen-Key Bandpass Filter}
+\begin{itemize}[leftmargin=*]
+    \item \textbf{Parameters:} $f_0 = 25,000\text{ Hz}$, $\text{BW} = 200\text{ Hz}$, $Q = 125$.
+    \item \textbf{Components:} TL072 Op-Amps, $R_3 = R_5 = 796\text{ k}\Omega$ (1\%), $R_4 = 6.34\text{ k}\Omega$ (1\%), $C_3 = C_4 = 1.0\text{ nF}$ (C0G/NP0).
+    \item \textbf{Input Attenuator:} $R_{\text{div1}} = 10\text{ k}\Omega, R_{\text{div2}} = 2.2\text{ k}\Omega$ ($-15\text{ dB}$ reduction) to eliminate passband rail saturation.
+\end{itemize}
+
+\subsubsection{Channel 3: 35~kHz Multiple Feedback (MFB) Filter (Redesign)}
+\begin{itemize}[leftmargin=*]
+    \item \textbf{Rationale:} The previous Sallen-Key design oscillated unconditionally due to $Q=175$ exceeding the stability limit of the op-amp. The MFB topology uses inverting feedback, ensuring unconditional stability.
+    \item \textbf{Design Equations ($C_1 = C_2 = C = 1.0\text{ nF}$, $A_v = 2.0$):}
+    \begin{align*}
+        R_3 &= \frac{Q}{\pi f_0 C} = \frac{175}{\pi \times 35000 \times 1\times 10^{-9}} = \mathbf{1.591\text{ M}\Omega} \quad (\text{Standard } 1.58\text{ M}\Omega)\\
+        R_1 &= \frac{R_3}{2 A_v} = \frac{1.591\text{ M}\Omega}{2 \times 2.0} = \mathbf{397.8\text{ k}\Omega} \quad (\text{Standard } 392\text{ k}\Omega)\\
+        R_2 &\approx \frac{R_3}{4 Q^2} = \frac{1.591\text{ M}\Omega}{4 \times 175^2} = \mathbf{12.98\,\Omega} \quad (\text{Standard } 13\,\Omega \text{ or } 10\,\Omega + 3\,\Omega)
+    \end{align*}
+\end{itemize}
+
+\subsection{Block 4: Diode Envelope Detector \& Buffer}
+\begin{itemize}[leftmargin=*]
+    \item \textbf{Components:} 1N4148 fast switching diode, $C_1 = 10\text{ nF}$, $R_1 = 22\text{ k}\Omega$ ($\tau = 220\,\mu\text{s}$).
+    \item \textbf{Buffer:} TL072 configured as unity-gain voltage follower ($V_{\text{out}} = V_{\text{in}}$).
+\end{itemize}
+
+\subsection{Block 5: Video Bandwidth (VBW) Low-Pass Filter}
+\begin{itemize}[leftmargin=*]
+    \item \textbf{Selectable Modes:} 
+    \begin{itemize}
+        \item Low VBW ($f_c \approx 50\text{ Hz}$): $R = 33\text{ k}\Omega, C = 100\text{ nF}$ (Max smoothing; sweep $\ge 200\text{ ms}$).
+        \item Medium VBW ($f_c \approx 200\text{ Hz}$): $R = 10\text{ k}\Omega, C = 82\text{ nF}$.
+        \item High VBW ($f_c \approx 1\text{ kHz}$): $R = 10\text{ k}\Omega, C = 15\text{ nF}$ (Fast sweep response).
+    \end{itemize}
+\end{itemize}
+
+\subsection{Block 6: Sawtooth Sweep Generator \& VCO}
+\begin{itemize}[leftmargin=*]
+    \item \textbf{Integrator:} TL072, $C_{\text{time}} = 10\text{ nF}\text{ to } 100\text{ nF}$, $R_{\text{charge}} = 100\text{ k}\Omega$ ($I_{\text{charge}} = 50\,\mu\text{A}$).
+    \item \textbf{Comparator \& Reset:} TL072 Schmitt trigger ($R_{\text{in}} = 10\text{ k}\Omega, R_{\text{fb}} = 60\text{ k}\Omega$), 2N3904 reset BJT.
+    \item \textbf{LO Modulator:} Sweeps $f_{\text{LO}}$ from $20\text{ kHz}$ to $50\text{ kHz}$ synchronously with the $0\text{V} \to 5\text{V}$ tuning ramp.
+\end{itemize}
+
+\section{Comprehensive Simulation Test Suite}
+
+\subsection{Sim 1: AC Frequency Response \& Stability Analysis}
+\begin{lstlisting}
+.ac dec 200 10k 50k
+.meas AC f_center MAX mag(V(IF_out_2))
+.meas AC f_low WHEN mag(V(IF_out_2))=f_center/sqrt(2) FALL=1
+.meas AC f_high WHEN mag(V(IF_out_2))=f_center/sqrt(2) RISE=1
+.meas AC bw PARAM (f_high - f_low)
+\end{lstlisting}
+\textbf{Target:} Verify $f_0 = 25,000 \pm 100\text{ Hz}$, $\text{BW} = 200 \pm 25\text{ Hz}$, and confirm phase decreasing monotonically with no right-half plane poles.
+
+\subsection{Sim 2: Monte Carlo Component Tolerance Analysis}
+\begin{lstlisting}
+.param R3_val = {mc(796k, 0.01)}
+.param R4_val = {mc(6.34k, 0.01)}
+.param C3_val = {mc(1n, 0.05)}
+.param C4_val = {mc(1n, 0.05)}
+.step param run 1 100 1
+\end{lstlisting}
+\textbf{Target:} 100-run statistical sweep ensuring $>95\%$ of runs remain within $25,000 \pm 250\text{ Hz}$ ($1.0\%$) center frequency error.
+
+\subsection{Sim 3: Worst-Case Sensitivity Analysis}
+\begin{lstlisting}
+.param R3_wc = {wc(796k, 0.01, 1)}
+.param R5_wc = {wc(796k, 0.01, 2)}
+.param C3_wc = {wc(1n, 0.05, 3)}
+.param C4_wc = {wc(1n, 0.05, 4)}
+.step param run 1 16 1
+\end{lstlisting}
+\textbf{Target:} Evaluate maximum frequency error bounding box ($\Delta f_{\text{max}}$) across all binary tolerance corner permutations.
+
+\subsection{Sim 4: Thermal Drift Analysis}
+\begin{lstlisting}
+.model RES_PRECISION R (tc1=50e-6)  ; 50 ppm/C TCR
+.step temp 0 70 10
+\end{lstlisting}
+\textbf{Target:} Ensure total frequency shift over $\Delta T = 40^\circ\text{C}$ is $< 50\text{ Hz}$ ($< 25\%$ of filter bandwidth).
+
+\subsection{Sim 5: Mixer Intermodulation Distortion \& Linearity (FFT)}
+\begin{lstlisting}
+* Two-tone RF input: 5.0 kHz + 5.2 kHz (100 mVpk each); LO = 20.0 kHz
+.tran 0 20m 10m 100n
+\end{lstlisting}
+\textbf{Target:} Take FFT on \texttt{V(mix\_out)}. Measure mixing products ($25.0, 25.2\text{ kHz}$) and 3rd-order intermodulation products ($24.8, 25.4\text{ kHz}$). Verify $\text{SFDR} \ge 45\text{ dBc}$.
+
+\subsection{Sim 6: Master Dynamic Multi-Tone Sweep}
+\begin{lstlisting}
+* Three-tone RF: 4.0 kHz + 7.0 kHz + 12.0 kHz; Sweeping LO: 20 kHz to 40 kHz
+.tran 0 100m 0 1u
+\end{lstlisting}
+\textbf{Target:} Plot $V_{\text{env\_out}}$ vs. $V(\text{ramp})$ in X-Y display mode. Confirm three distinct, symmetrical spectral peaks at exact expected positions.
+
+\section{Summary of Deliverables}
+
+\begin{table}[h!]
+\centering
+\small
+\begin{tabularx}{\textwidth}{clllX}
+\toprule
+\textbf{\#} & \textbf{Schematic File} & \textbf{Simulation Type} & \textbf{Key Directive} & \textbf{Target Metric} \\
+\midrule
+1 & \texttt{03\_IF\_Filter\_Bank.asc} & AC Response & \texttt{.ac dec 200 10k 50k} & $f_0 = 25\text{ kHz}, \text{BW} = 200\text{ Hz}$, Stable \\
+2 & \texttt{03\_IF\_Filter\_Bank.asc} & Monte Carlo & \texttt{.step param run 1 100 1} & $\Delta f_0 < \pm 250\text{ Hz}$ across 100 runs \\
+3 & \texttt{03\_IF\_Filter\_Bank.asc} & Temperature & \texttt{.step temp 0 70 10} & $\Delta f_0 < 50\text{ Hz}$ over $\Delta T = 40^\circ\text{C}$ \\
+4 & \texttt{02\_Gilbert\_Mixer.asc} & Linearity / FFT & \texttt{.tran 0 20m 10m 100n} & $\text{SFDR} \ge 45\text{ dBc}$, conversion gain \\
+5 & \texttt{06\_Sawtooth\_VCO.asc} & Ramp Linearity & \texttt{.tran 0 50m 0 1u} & $0\text{V} \to 5\text{V}$ linear ramp, flyback $< 0.5\text{ ms}$ \\
+6 & \texttt{SpectrumAnalyzer\_Master.asc} & Master Sweep & \texttt{.tran 0 100m 0 1u} & 3-tone spectrum resolved in X-Y mode \\
+\bottomrule
+\end{tabularx}
+\caption{Required Simulation Files and Verification Milestones}
+\end{table}
+
+\end{document}
