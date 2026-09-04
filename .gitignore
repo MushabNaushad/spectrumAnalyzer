@@ -1,4 +1,4 @@
-# LTSpice simulation outputs and large binary data files
+# LTSpice simulation outputs, waveforms, and large log/binary data files
 *.raw
 *.op.raw
 *.log
@@ -7,6 +7,27 @@
 *.meas
 *.measlog
 *.cir
+*.four
+*.step
+*.steplog
+*.wav
+
+# LaTeX logs and auxiliary build files (from LTSPICE_SIMULATION_GUIDE.tex)
+*.aux
+*.fls
+*.fdb_latexmk
+*.synctex.gz
+*.toc
+*.out
+*.bbl
+*.blg
+
+# General logs and debug dumps
+logs/
+*.log.*
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
 
 # LTSpice backup and auto-save files
 *.bak
@@ -14,6 +35,7 @@
 *.bak1
 *.bak2
 * - Copy*
+*.tmp
 
 # OS specific files
 .DS_Store
@@ -28,3 +50,4 @@ Thumbs.db
 __pycache__/
 *.py[cod]
 *$py.class
+
