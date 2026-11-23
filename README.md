@@ -1,294 +1,247 @@
-# Spectrum Analyzer — Project README
+# Analog Heterodyne Spectrum Analyzer
 
-> A hardware superheterodyne spectrum analyzer built from discrete analog components, designed and simulated in LTSpice.  
-> Inspired by and designed against the architecture described in the [NI Application Note: Super-Heterodyne Signal Analyzer](References/Super%20hetrodyne%20signal%20analyuzer.pdf).
+> A swept superheterodyne audio spectrum analyzer built from discrete analog circuits, with an ESP32 used only to digitise and display the result.
+> Designed against the architecture described in the [NI Application Note: Super-Heterodyne Signal Analyzer](References/Super%20hetrodyne%20signal%20analyuzer.pdf).
+
+**Team Quantum Resonators (Group 15)** — EN2091 Laboratory Practice and Projects, Department of Electronic & Telecommunication Engineering, University of Moratuwa.
+
+| Index No | Name |
+|---|---|
+| 240442V | Mushab M.N.A. |
+| 240557D | Rathees S. |
+| 240435D | Mindiya A.S.G.M. |
+| 240642J | Tennekone A.D.T.M.S.H. |
 
 ---
 
 ## Table of Contents
-- [Architecture Overview](#architecture-overview)
+- [Overview](#overview)
+- [Architecture](#architecture)
+- [Block by Block](#block-by-block)
+- [Specifications](#specifications)
+- [Test Results](#test-results)
+- [Firmware](#firmware)
+- [Test Tone Generator](#test-tone-generator)
+- [Project Files](#project-files)
+- [Known Limitations](#known-limitations)
+- [Future Work](#future-work)
 - [Project Status](#project-status)
-- [Current Work — Block by Block](#current-work--block-by-block)
-- [Known Issues & Simulation Findings](#known-issues--simulation-findings)
-- [Implementation Plan — Remaining Work](#implementation-plan--remaining-work)
-- [Design Notes & Constraints](#design-notes--constraints)
 
 ---
 
-## Architecture Overview
+## Overview
 
-The instrument follows the classic swept superheterodyne architecture. An incoming RF signal is mixed down to an intermediate frequency (IF) by a swept local oscillator (LO/VCO). A narrow bandpass filter selects the IF, an envelope detector converts it to a magnitude trace, and the LO sweep ramp is used to synchronize the horizontal (frequency) display axis.
+The device displays the 0 to 5 kHz spectrum of a small-amplitude audio signal on a 3.5-inch TFT display. The input is amplified and low-pass filtered, then mixed in a discrete Gilbert cell with a swept voltage-controlled oscillator (VCO). Two fixed band-pass filters at different intermediate frequencies (IFs) select one frequency component at a time, so a single sweep covers the band on two channels:
+
+- **Channel 1:** 0 to 2.5 kHz (IF ≈ 5 kHz)
+- **Channel 2:** 2.5 to 5 kHz (IF ≈ 7.4 kHz)
+
+Envelope detectors turn each IF output into a DC level. An ADS1115 ADC samples both channels together with the sweep ramp, and an ESP32 plots amplitude against frequency.
+
+The whole system is built on a custom 2-layer PCB inside a 3D-printed PLA enclosure, and runs from a single 9 V DC adapter.
+
+---
+
+## Architecture
 
 ```
-RF Input
-   │
-   ▼
-┌──────────────┐     ┌──────────────┐     ┌─────────────────────┐
-│  [TODO]      │     │              │     │   IF Bandpass        │
-│  RF          │────▶│    Mixer     │────▶│   Filter Bank        │
-│  Preselector │     │    (×2.5)    │     │  ┌──────────────┐   │
-└──────────────┘     └──────┬───────┘     │  │ 25 kHz / Q≈125│  │
-                            │             │  │ (IF Channel 2)│  │
-┌──────────────┐            │             │  └──────────────┘   │
-│   Sawtooth   │            │             │  ┌──────────────┐   │
-│   VCO        │────────────┘             │  │ 35 kHz / Q≈175│  │
-│  (sweeping   │                          │  │ (IF Channel 3)│  │
-│   LO)        │                          │  └──────────────┘   │
-└──────┬───────┘                          └──────────┬──────────┘
-       │                                             │
-       │ (tuning ramp)                               ▼
-       │                                  ┌─────────────────────┐
-       │                                  │  Envelope Detector   │
-       │                                  │  (Diode + RC + Buf)  │
-       │                                  └──────────┬──────────┘
-       │                                             │
-       ▼                                             ▼
-┌──────────────┐                          ┌─────────────────────┐
-│  [TODO]      │                          │  [TODO]              │
-│  X-axis      │                          │  Video BW Filter +   │
-│  Display     │◀─────────────────────────│  Output / Display    │
-│  Driver      │                          └─────────────────────┘
-└──────────────┘
+ Audio in (XLR)
+      │
+      ▼
+┌──────────────┐   ┌──────────────┐   ┌──────────────┐        ┌───────────────────┐   ┌──────────────┐
+│ Preamplifier │──▶│ 4th-order LPF│──▶│ Gilbert cell │──┬────▶│ BPF 1 (≈5.04 kHz) │──▶│ Envelope     │──▶ AIN0 ─┐
+│ ×28.5–×83.5  │   │ Butterworth  │   │ mixer        │  │     │ Tow-Thomas, 106 Hz│   │ detector 1   │          │
+└──────────────┘   │ fc ≈ 4.9 kHz │   └──────▲───────┘  │     └───────────────────┘   └──────────────┘          │
+                   └──────────────┘          │          │     ┌───────────────────┐   ┌──────────────┐          │
+                                             │          └────▶│ BPF 2 (7.40 kHz)  │──▶│ Envelope     │──▶ AIN1 ─┤
+                                             │                │ Tow-Thomas, 106 Hz│   │ detector 2   │          │
+                                             │                └───────────────────┘   └──────────────┘          ▼
+                                     ┌───────┴──────┐                                                   ┌──────────────┐
+                                     │ VCO (ICL8038)│                                                   │ ADS1115 ADC  │
+                                     │ ≈5 → 2.5 kHz │                                                   │ 16-bit, I²C  │
+                                     └───────▲──────┘                                                   └──────┬───────┘
+                                             │                                                                 │
+                                     ┌───────┴──────┐                                                   ┌──────▼───────┐   ┌──────────────┐
+                                     │  Sawtooth    │─────────────────── ramp (AIN2) ──────────────────▶│ ESP32-WROOM  │──▶│ 3.5" TFT     │
+                                     │  generator   │                                                   │ -32D         │SPI│ ST7796S      │
+                                     └──────────────┘                                                   └──────────────┘   └──────────────┘
 ```
+
+Heterodyne principle: the mixer produces sum and difference products, and the band-pass filter selects the component that lands on the IF:
+
+$$f_{IN} = f_{IF} - f_{LO}$$
+
+As the LO sweeps down, each input frequency moves onto the IF in turn.
+
+### Power
+
+```
+9 V DC adapter ──▶ reverse-polarity diode ──┬──▶ +9 V analog rail (VCC)
+                                           ├──▶ MC34063A inverter ──▶ −9.7 V (VEE)
+                                           └──▶ MC34063A step-down ──▶ 5 V ──▶ AMS1117 ──▶ 3.3 V (VDD)
+```
+
+Both MC34063A converters switch at about 40 kHz (C_T = 820 pF), well above the signal and IF band.
+
+---
+
+## Block by Block
+
+### 1. Input preamplifier
+AC-coupled non-inverting amplifier with clamp diodes to the rails. A front-panel potentiometer sets the gain to catch small signals:
+
+$$A_v = 1 + \frac{25\,\text{k}\Omega + R_{pot}}{909\,\Omega}, \quad R_{pot} = 0\text{–}50\,\text{k}\Omega \;\Rightarrow\; \times28.5\text{ to }\times83.5\ (29\text{–}38\text{ dB})$$
+
+### 2. Anti-image low-pass filter
+Two cascaded unity-gain Sallen-Key stages (Q ≈ 0.55 and 1.30) give a 4th-order Butterworth response with a cutoff of about 4.9 kHz and an 80 dB/decade roll-off.
+
+### 3. Mixer
+Discrete Gilbert cell (2N2222A). For small inputs it acts as a linear multiplier:
+
+$$V_{out} = k\tanh\!\left(\frac{V_{RF}}{2V_T}\right)\tanh\!\left(\frac{V_{LO}}{2V_T}\right) \approx k'\,V_{RF}V_{LO}$$
+
+The LO is attenuated to about 50 mV peak-to-peak before the mixer.
+
+### 4. IF band-pass filters
+Two Tow-Thomas biquads (NE5532), chosen for stable high-Q operation and independent control of f₀, bandwidth and gain:
+
+$$f_0 = \frac{1}{2\pi R_F C}, \quad BW = \frac{1}{2\pi R_B C}, \quad G = \frac{R_B}{R_G}$$
+
+| | Channel 1 | Channel 2 |
+|---|---|---|
+| R_F | 3.16 kΩ | 2.15 kΩ |
+| C | 10 nF | 10 nF |
+| R_B | 150 kΩ | 150 kΩ |
+| Design f₀ | 5.04 kHz | 7.40 kHz |
+| Design Q | 47.5 | 69.8 |
+| Bandwidth | ≈106 Hz | ≈106 Hz |
+
+### 5. Envelope detectors
+Precision half-wave rectifier (TL072C, 1N4148) followed by an RC peak-hold filter and a buffer, giving a DC level proportional to the spectral magnitude.
+
+### 6. Sawtooth generator
+TL072 integrator with a Schmitt-trigger comparator and a 2N3904 flyback transistor that discharges the integrator capacitor. The ramp runs from 0 to about 3.55 V with a period of about 0.56 s.
+
+### 7. VCO
+ICL8038 swept through its FM sweep input (pin 8). A non-inverting summing amplifier maps the sawtooth onto the allowed sweep range:
+
+$$f = \frac{3\,V_{SWEEP}}{2\,R\,C\,V_{SUPPLY}}$$
+
+### 8. Digitising and display
+The ADS1115 reads AIN0 (channel 1), AIN2 (ramp) and AIN1 (channel 2) in sequence at 860 SPS, giving about 126 sets per second (125 µV/LSB). The ESP32 uses one core for sampling and one for drawing. The ramp voltage sets the horizontal position, so each reading is plotted at its frequency.
+
+---
+
+## Specifications
+
+| Parameter | Value |
+|---|---|
+| Frequency range | 0 to 5 kHz, two channels |
+| Resolution bandwidth | ≈106 Hz (design) |
+| Sweep period / refresh | ≈0.56 s (about 2 updates per second) |
+| Preamplifier gain | 29 to 38 dB |
+| Recommended input | 5 to 50 mV peak-to-peak, never above 200 mV peak |
+| Input connector | XLR socket |
+| Display | 3.5-inch 480 × 320 colour TFT (ST7796S, SPI) |
+| Supply | 9 V DC, centre positive |
+| PCB | 2-layer, 105 × 145 mm, ground plane on the bottom layer |
+| Enclosure | 3D-printed PLA, 175 × 135 × 67 mm |
+
+---
+
+## Test Results
+
+- Tested with sine and square waveforms from a PC audio output at about 50 mV peak-to-peak. Each tone shows as a clear peak at its frequency.
+- Component tolerances shift the measured values from the design:
+  - Channel 1 IF centre frequency: about **4.85 kHz** (design 5.04 kHz).
+  - VCO sweep: from a little above **5 kHz down to about 2.5 kHz** (calculated 5.1 → 2.8 kHz).
+  - Sweep period: about **0.56 s** (calculated 0.44 s).
+  - Displayed ranges: about 0 to 2.4 kHz (channel 1) and 2.5 to 5 kHz (channel 2).
+- Measured rails: VEE about −9.7 V. The ADC delivers about 126 sample sets per second.
+- A small amount of noise appears as low ripple on the baseline, and a tone above 5 kHz (for example 9 kHz) can show as a small image peak.
+
+### Simulation
+The Gilbert cell, the input filter and amplification stages, and the output extraction stage were simulated in LTspice. The VCO was simulated with behavioural sources, because no ICL8038 model is available in LTspice.
+
+---
+
+## Firmware
+
+PlatformIO project for the ESP32-WROOM-32D (`firmware_esp32/`).
+
+| Build | Command | Purpose |
+|---|---|---|
+| `tft_st7796` (default) | `pio run -e tft_st7796 -t upload` | **Firmware used on the device** |
+| `tft_ili9488` | `pio run -e tft_ili9488 -t upload` | Same panel with the ILI9488 driver |
+| `udp_web` | `pio run -e udp_web -t upload` | Bring-up build: plot in a PC browser over Wi-Fi |
+| `i2c_diag` | `pio run -e i2c_diag -t upload` | Bring-up build: I²C and ADC diagnostics |
+
+Key files:
+- `src/main_tft.cpp` — main loop (core 1): reads samples and draws them.
+- `lib/ScopeCore/ADS1115.*` — register-level ADS1115 driver (no external library).
+- `lib/ScopeCore/ScopeSampler.*` — sampling task on core 0 (AIN0 → AIN2 → AIN1), with I²C bus recovery.
+- `lib/ScopeCore/SweepTracker.*` — learns the ramp maximum over the first sweeps, then detects each retrace.
+- `src/xyplot_tft.h` — display: channel 1 (yellow) on the left half, channel 2 (cyan) on the right half.
+- `include/config.h` — pins, channel mapping, Y scale (0.5 V/div) and axis labels.
+
+---
+
+## Test Tone Generator
+
+`tone_generator/tone_generator_7k.py` is a PC tool for generating test tones (sine, square, triangle, sawtooth) through the computer's audio output. It includes an output device selector and an "analyzer view" that shows what the spectrum should look like at about 106 Hz resolution.
+
+---
+
+## Project Files
+
+| File | Contents |
+|---|---|
+| `Sheet1.SchDoc` | Altium schematic |
+| `PCB1.PcbDoc` | Altium PCB layout (as fabricated) |
+| `Quantum_resonators_PCB_Print_files.zip` | Gerber and drill files sent for fabrication |
+| `Quantum_Resonators_Enclosure_1.STL` | Enclosure base |
+| `Quantum_Resonators_Enclosure_2.STL` | Enclosure top panel with logo |
+| `15_Quantum_Resonators_EN2091_Analog_Project.pdf` | Project report |
+| `15_Quantum_Resonators_Datasheet.pdf` | Datasheet |
+| `15_Quantum_Resonators_User_Manual.pdf` | User manual |
+| `firmware_esp32/` | ESP32 firmware (PlatformIO) |
+| `tone_generator/` | PC test tone generator |
+
+> Note: several component values were changed on the board during bring-up. The schematic shows the original design values; see the report and datasheet for the fitted values.
+
+---
+
+## Known Limitations
+
+- The analog rails are not separately regulated, so supply variation shifts the VCO frequency.
+- The 4th-order input filter gives only about 15 dB rejection at the bottom of the image band, so strong tones above 5 kHz can appear as small false peaks.
+- Component tolerances move the IF centre frequencies and the sweep range away from the design values.
+- The single swept filter per channel sets a fixed trade-off between resolution, range and refresh rate.
+- The bottom ground plane runs to the board edge with no pull-back.
+
+---
+
+## Future Work
+
+- Regulate the positive and negative supply rails to suppress power spikes.
+- Use a higher-order input filter for more rejection of frequencies above 5 kHz.
+- Add an output gain control to scale the displayed signal.
+- Add a timing controller to increase resolution at the cost of range.
+- Use more band-pass filter paths so each covers a smaller sweep range than the current 2.5 kHz, for higher resolution or a faster refresh rate while keeping the filters' settling time.
 
 ---
 
 ## Project Status
 
-**Overall Completion: ~35%**
-
-| Phase | Block | Status | Notes |
-|---|---|:---:|---|
-| **Frequency Generation** | Sawtooth VCO (integrator + comparator) | ⚠️ Partial | Core circuit works; LTC1540 comparator variant tested. Flyback, reset switch, temperature stability not validated. |
-| **Frequency Mixing** | Analog multiplier (B2 behavioral) | ✅ Working | Behavioral model only — not yet a real hardware mixer. |
-| **IF Filtering** | 25 kHz Sallen-Key bandpass (IF Ch. 2) | ⚠️ Working but saturating | Simulated. Center freq error −25 Hz (−0.1%). Output clips at ~7.4 Vpp on ±5V rails in passband. BW measured ~176 Hz vs 200 Hz designed. |
-| **IF Filtering** | 35 kHz Sallen-Key bandpass (IF Ch. 3) | ❌ Oscillating | Q=175 exceeds stable limit for Sallen-Key topology with LT1124. Self-oscillates at 7.37 Vpp constantly. Requires topology change. |
-| **Envelope Detection** | Diode + 10nF cap + 22kΩ (×2) | ✅ Simulated | Functional in simulation. Not hardware validated. |
-| **Filter Scale Management** | AC frequency response / scale circuit | ⚠️ Partial | `FilterAndScaleManagement.asc` exists; AC simulation only. Not integrated into main chain. |
-| **Drift Sensitivity** | LO drift test (±500 Hz parametric sweep) | ✅ Complete | Full 41-step sweep run. Analysis documented. |
-| **RF Preselector** | Tunable/switched prefilter at RF input | ❌ Not started | Described in reference §8. Required to suppress image and harmonic responses. |
-| **Video BW Filter** | Post-detection low-pass smoothing filter | ❌ Not started | Required for noise floor smoothing. Single-pole RC per reference §5. |
-| **Display / Output** | X-Y amplitude vs. frequency output | ❌ Not started | Synchronization of LO ramp with envelope output is undefined. |
-| **Full Integration** | End-to-end sweep with real VCO connected | ❌ Not started | VCO not yet connected to mixer; behavioral source used as placeholder. |
-| **Calibration** | Amplitude flatness, frequency accuracy | ❌ Not started | Required for meaningful measurements. |
-
----
-
-## Current Work — Block by Block
-
-### 1. Sawtooth VCO — `SawTooth/sawtooth_vco.asc`
-**Architecture:** LT1001 op-amp integrator + 2N3904 NPN reset switch + LT1001 (or LTC1540 in variant) comparator.
-
-- **`sawtooth_vco.asc`** — Primary design. Uses two LT1001 op-amps (integrator + comparator). Reset via 2N3904 BJT. Charging from a −5 V reference through 100 kΩ / 1 µF.
-- **`sawtooth_vco - Copy.asc`** — Variant using LTC1540 nanopower comparator and an ideal switch (`MYSW`) instead of the 2N3904. Likely exploring faster/cleaner reset.
-- **`sawtooth_vco - Copy (2).asc`** — Appears to be the same as primary design (2N3904 reset), possibly a save point.
-
-**Known issues:** Flyback non-linearity, BJT $V_{CE(sat)}$ residual charge, capacitor dielectric absorption. None of these have been simulated with temperature or supply variation. The VCO output is **not yet connected** to the mixer in the main analysis files — a behavioral `sin()` source is used as a placeholder.
-
----
-
-### 2. Mixer — `Filter + Env Detector/Filter_AP.asc`
-**Architecture:** Behavioral voltage source `B2`: `V=V(vco)*V(rf)*2.5`
-
-This is a mathematical ideal multiplier — not a real hardware mixer (e.g., Gilbert cell, diode ring, or SA612). It has no:
-- Conversion loss
-- LO-to-RF isolation
-- Port-to-port feedthrough
-- Harmonic products beyond 2nd order
-
-Suitable for simulation of filter behavior, but must be replaced for hardware design.
-
----
-
-### 3. IF Filter Bank — `Filter + Env Detector/Filter_AP.asc`
-
-Two parallel 2nd-order Sallen-Key active bandpass filters using LT1124 op-amps (±5 V supply):
-
-| Parameter | IF Channel 2 | IF Channel 3 |
-|---|---|---|
-| Designed center frequency | 25 kHz | 35 kHz |
-| Designed bandwidth | 200 Hz | 200 Hz |
-| Design Q | 125 | 175 |
-| R (timing, ×2) | 796 kΩ (tol=1%) | 796 kΩ (tol=1%) |
-| R (gain) | 6.34 kΩ (tol=1%) | 4.53 kΩ (tol=0.1% on R12) |
-| R (summing, ×2) | 10 kΩ (tol=1%) | 10 kΩ (tol=1%) |
-| C (timing, ×2) | 1 nF | 1 nF |
-| Simulated center freq | **24,975 Hz** (−25 Hz, −0.10%) | N/A (oscillating) |
-| Simulated BW | **~176 Hz** | N/A (oscillating) |
-| Status | ⚠️ Saturating in passband | ❌ Self-oscillating |
-
----
-
-### 4. Envelope Detectors — `Filter + Env Detector/Filter_AP.asc`
-Two identical half-wave envelope detectors, one per IF channel:
-- **Diode** (ideal in simulation, D1/D2)
-- **10 nF** hold capacitor (C1/C2)
-- **22 kΩ** discharge resistor (R1/R2)
-- LT1124 unity-gain buffer (U8/U9)
-
-Time constant: $\tau = RC = 22\text{k} \times 10\text{n} = 220\,\mu\text{s}$. This limits the maximum video bandwidth to approximately $\frac{1}{2\pi\tau} \approx 720\text{ Hz}$, which is adequate for a 200 Hz resolution bandwidth filter.
-
----
-
-### 5. Filter Scale Management — `Filter Management/FilterAndScaleManagement.asc`
-An AC frequency response simulation (`.ac dec 100 10 100k`) of a filtering and scaling stage. Contains:
-- A UniversalOpAmp2-based active filter
-- Dual diode amplitude detector (D1/D2)
-- RC output filter (R6=10kΩ, C2=820pF)
-- Commented-out `.tran` and `.wave` directives suggesting future audio-rate output testing
-
-**Status:** Isolated AC simulation. Not connected to the main signal chain. Its role in the final architecture is unclear — likely a VBW filter or output scaling stage.
-
----
-
-## Known Issues & Simulation Findings
-
-> [!CAUTION]
-> **IF Channel 3 (35 kHz) is self-oscillating.** The Sallen-Key topology with Q=175 exceeds the stability margin of the LT1124 at 35 kHz. V(IF_out_3) = 7.37 Vpp constantly across all 41 drift steps (σ = 0.00014 V), completely independent of input. This channel is **currently unusable**.
-
-> [!WARNING]
-> **IF Channel 2 output saturates at the supply rails** for input signals within the passband. Peak Vpp ≈ 7.4 V on ±5 V supply. The amplitude response is non-linear in the passband, making amplitude measurements unreliable near the center frequency.
-
-> [!WARNING]
-> **The VCO is not connected to the mixer.** All current simulations use a behavioral `sin()` source as the LO. The non-linearity, sweep rate variation, and frequency errors of the real sawtooth VCO have not been tested in the full signal chain.
-
-> [!NOTE]
-> IF Channel 2 center frequency: 24,975 Hz (−25 Hz, −0.10% error). Within 1% component tolerance. Measured bandwidth: ~176 Hz vs. 200 Hz designed. Asymmetric 3 dB rolloff: −51 Hz on negative drift side, +125 Hz on positive side (partially an artifact of output clipping).
-
----
-
-## Implementation Plan — Remaining Work
-
-### Phase 1: Fix the 35 kHz IF Filter (Critical)
-
-**Goal:** Replace the oscillating Sallen-Key design with a stable topology.
-
-**Recommended approach — Multiple Feedback (MFB) Bandpass:**
-
-The MFB topology is inherently stable at high Q values because it uses inverting feedback with a single op-amp and does not have the positive feedback sensitivity of Sallen-Key.
-
-For $f_0 = 35\text{ kHz}$, $Q = 175$, $\text{BW} = 200\text{ Hz}$:
-$$C_1 = C_2 = 1\text{ nF}, \quad R_1 = \frac{Q}{\pi f_0 C} = \frac{175}{\pi \times 35000 \times 1\text{n}} \approx 1.59\text{ M}\Omega$$
-$$R_2 = \frac{1}{2Q^2 \pi f_0 C} \approx 1.3\text{ k}\Omega, \quad R_3 = 2R_1 = 3.18\text{ M}\Omega$$
-
-**Alternative:** Cascade two lower-Q stages (Q≈87 each) using the existing Sallen-Key topology.
-
-**Steps:**
-- [ ] Design MFB schematic for 35 kHz / 200 Hz in LTSpice
-- [ ] AC sweep verification: confirm Q, center frequency, gain
-- [ ] Transient test with mixer output as input
-- [ ] Replace U4/U5/U6 in `Filter_AP.asc`
-
----
-
-### Phase 2: Fix IF Channel 2 Output Saturation
-
-**Goal:** Reduce the signal level hitting the IF filters to keep op-amps out of saturation.
-
-**Options:**
-1. **Reduce mixer gain** from ×2.5 to ×0.5 (change behavioral source coefficient). This brings the IF signal to ~1.5 Vpp in-band, well within linear range.
-2. **Add a voltage divider / attenuator** between the mixer output and the filter inputs.
-3. **Reduce RF input amplitude** to be representative of actual antenna signal levels (mV range, not 1 V).
-
-**Steps:**
-- [ ] Model realistic RF input level (e.g., 10 mV instead of 1 V)
-- [ ] Adjust mixer gain to match expected signal chain levels
-- [ ] Re-run drift test; confirm Vpp stays below 4 V in passband
-
----
-
-### Phase 3: Connect the Real VCO
-
-**Goal:** Replace the behavioral `sin()` LO source with the actual `sawtooth_vco.asc` circuit.
-
-**Steps:**
-- [ ] Resolve `sawtooth_vco.asc` copy confusion — consolidate to single canonical design
-- [ ] Validate VCO operating frequency and tuning range in standalone simulation
-- [ ] Determine VCO control voltage range and sensitivity ($K_{VCO}$, Hz/V)
-- [ ] Connect VCO output to mixer input (replace B1 behavioral source)
-- [ ] Run full transient sweep — observe IF output vs. time
-- [ ] Check for sweep non-linearity: measure $\frac{df_{LO}}{dt}$ and confirm linearity over sweep range
-- [ ] Characterize VCO startup transient; ensure sweep settles before measurement window
-
----
-
-### Phase 4: Video Bandwidth (VBW) Filter
-
-**Goal:** Add the post-detection low-pass filter to smooth the noise floor (as described in reference §5).
-
-The VBW filter is a single-pole RC low-pass placed after the envelope detector. It trades noise floor smoothing against sweep speed.
-
-For a VBW of approximately 50 Hz:
-$$\tau = \frac{1}{2\pi \times 50} \approx 3.2\text{ ms}, \quad R=32\text{ k}\Omega, \quad C=100\text{ nF}$$
-
-**Steps:**
-- [ ] Design selectable VBW filter (e.g., 50 Hz / 200 Hz / 1 kHz)
-- [ ] Integrate after envelope detector buffers in `Filter_AP.asc`
-- [ ] Verify smoothing effect in transient simulation with noise input
-
----
-
-### Phase 5: RF Preselector (Future)
-
-**Goal:** Add a tunable or switched bandpass prefilter at the RF input to suppress image and harmonic responses (reference §3, §8).
-
-Per the reference, the preselector bandwidth must be **less than one octave** to prevent second-harmonic interference from appearing at the IF.
-
-For a 0–30 kHz tuning range (audio-band spectrum analyzer):
-- Low-band filter (0–10 kHz), mid-band (10–20 kHz), high-band (20–30 kHz) switched filter bank
-- Or: single tunable active bandpass filter tracking the LO
-
-**Steps:**
-- [ ] Determine final RF frequency range of the analyzer
-- [ ] Design 2–3 switched bandpass preselectors with < octave BW each
-- [ ] Characterize image rejection improvement with and without preselector
-
----
-
-### Phase 6: Display / Output
-
-**Goal:** Produce a frequency vs. amplitude output synchronized to the LO sweep.
-
-This requires:
-1. **X-axis:** A voltage proportional to the instantaneous LO frequency (the VCO tuning ramp)
-2. **Y-axis:** The envelope detector output (post-VBW filter)
-3. **Display:** Oscilloscope in XY mode, or DAQ capture + Python plotting
-
-**Steps:**
-- [ ] Define the LO tuning ramp output node and its voltage-to-frequency scaling
-- [ ] Connect envelope output and tuning ramp to XY display or data capture
-- [ ] Write Python post-processing script to scale X axis to Hz and Y axis to dBm
-- [ ] Validate frequency axis accuracy against known input tones
-
----
-
-### Phase 7: Full Integration & Calibration
-
-**Steps:**
-- [ ] Connect all blocks into single `SpectrumAnalyzer_Full.asc`
-- [ ] Run end-to-end sweep with known input frequencies (5 kHz, 10 kHz)
-- [ ] Verify signal appears at correct X position on output
-- [ ] Characterize amplitude flatness across tuning range
-- [ ] Monte Carlo simulation: run 50+ iterations with all component tolerances randomized
-- [ ] Confirm >95% of runs show signals within ±1 channel bandwidth of correct position
-- [ ] Document final frequency range, RBW, noise floor, and dynamic range
-
----
-
-## Design Notes & Constraints
-
-| Parameter | Current Design Value | Reference Ideal |
-|---|---|---|
-| RF input range | 0–~30 kHz (audio band) | Application-specific |
-| IF center frequencies | 25 kHz, 35 kHz | Determined by LO tuning range |
-| Resolution Bandwidth (RBW) | 200 Hz (both channels) | Selectable: 10–10,000 Hz typical |
-| Filter topology | Sallen-Key bandpass | MFB recommended for Q > 50 |
-| Op-amp | LT1124 (GBW = 12.5 MHz) | Requires GBW >> Q × f₀ |
-| Supply voltage | ±5 V | Limits max Vpp to ~9 V |
-| Mixer | Behavioral (ideal) | Real: Gilbert cell or diode ring |
-| LO | Behavioral `sin()` / discrete sawtooth | Discrete relaxation oscillator |
-| Display | Not implemented | XY oscilloscope or DAQ |
-
----
-
-*Simulation data: `Filter + Env Detector/` directory. Large `.raw`, `.log`, `.net` files are gitignored.*
+**Complete.** The device has been designed, simulated, built on a custom PCB, assembled in its enclosure and tested.
+
+| Block | Status |
+|---|---|
+| Preamplifier and anti-image LPF | ✅ Built and tested |
+| Gilbert cell mixer | ✅ Built and tested |
+| Sawtooth generator and ICL8038 VCO | ✅ Built and tested |
+| Tow-Thomas IF filters (2 channels) | ✅ Built and tested |
+| Envelope detectors | ✅ Built and tested |
+| ADS1115 + ESP32 + TFT display | ✅ Built and tested |
+| Power supply (inverter, step-down, LDO) | ✅ Built and tested |
+| PCB and enclosure | ✅ Fabricated and assembled |
