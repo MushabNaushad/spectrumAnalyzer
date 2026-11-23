@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ADS1115 X-Y Scope</title>
+<style>
+  :root {
+    --bg: #0d1110; --panel: #151b19; --line: #26302d; --text: #d7e2dd; --muted: #7d8c86;
+    --grid: rgba(150, 190, 175, 0.16); --div: rgba(190, 215, 205, 0.55);
+    --ch1: #f2d64b; --ch2: #4fd6e8; --ok: #6fdc8c; --warn: #f0a24a; --bad: #f06a5a;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 14px/1.4 ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+  header { display: flex; flex-wrap: wrap; gap: 8px 18px; align-items: center;
+           padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel); }
+  header h1 { font-size: 15px; margin: 0 8px 0 0; letter-spacing: .04em; }
+  .pill { padding: 2px 8px; border-radius: 99px; border: 1px solid var(--line); color: var(--muted); }
+  .pill.ok { color: var(--ok); border-color: currentColor; }
+  .pill.warn { color: var(--warn); border-color: currentColor; }
+  .pill.bad { color: var(--bad); border-color: currentColor; }
+  .kv { color: var(--muted); } .kv b { color: var(--text); font-weight: 600; }
+  .spacer { flex: 1; }
+  button, label.chk { font: inherit; color: var(--text); background: #1d2522; border: 1px solid var(--line);
+           border-radius: 6px; padding: 4px 10px; cursor: pointer; user-select: none; }
+  button:hover, label.chk:hover { border-color: var(--muted); }
+  button.on { background: var(--warn); color: #111; border-color: var(--warn); }
+  main { padding: 16px; }
+  .scope { position: relative; width: 100%; max-width: 1200px; margin: 0 auto; aspect-ratio: 2 / 1;
+           min-height: 240px; }
+  .scope canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .readouts { max-width: 1200px; margin: 12px auto 0; display: flex; flex-wrap: wrap; gap: 8px 24px; }
+  .ch1 { color: var(--ch1); } .ch2 { color: var(--ch2); }
+  .note { max-width: 1200px; margin: 10px auto 0; color: var(--muted); font-size: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>ADS1115 X-Y SCOPE</h1>
+  <span id="conn" class="pill bad">disconnected</span>
+  <span id="state" class="pill">—</span>
+  <span class="kv">saw max <b id="sawmax">—</b></span>
+  <span class="kv">rate <b id="rate">—</b></span>
+  <span class="kv">lost pkts <b id="lost">0</b></span>
+  <span class="kv">sweeps <b id="sweeps">0</b></span>
+  <span class="spacer"></span>
+  <label class="chk"><input type="checkbox" id="persist" checked> previous sweep</label>
+  <button id="clear">Clear</button>
+  <button id="freeze">Freeze</button>
+</header>
+<main>
+  <div class="scope">
+    <canvas id="grid"></canvas>
+    <canvas id="trace"></canvas>
+  </div>
+  <div class="readouts">
+    <span class="ch1">CH1 (AIN0) <b id="v1">—</b></span>
+    <span class="ch2">CH2 (AIN1) <b id="v2">—</b></span>
+    <span>SAW (AIN2) <b id="vs">—</b></span>
+    <span class="kv">source <b id="src">—</b></span>
+  </div>
+  <p class="note">X = saw / saw<sub>max</sub> (min fixed at 0 V). CH1 → left half (0 … X<sub>max</sub>/2),
+    CH2 → right half (X<sub>max</sub>/2 … X<sub>max</sub>). Y fixed 0 … 3.3 V, 0.5 V/div.
+    Press BOOT on the ESP32 to re-learn the saw max.</p>
+</main>
+
+<script>
+"use strict";
+const Y_MAX = 3.3, Y_DIV = 0.5;
+const X_LEFT = "0 kHz", X_RIGHT = "5 kHz";   // X-axis end labels
+const F_SWEEP = 1, F_CAL = 2, F_ERR = 4;
+const M = { l: 46, r: 14, t: 14, b: 30 };   // plot margins (CSS px)
+
+const gridCv = document.getElementById("grid"), traceCv = document.getElementById("trace");
+const gctx = gridCv.getContext("2d"), tctx = traceCv.getContext("2d");
+const $ = id => document.getElementById(id);
+const css = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+
+let W = 0, H = 0, PW = 0, PH = 0;
+let cur = [[], []], prev = [[], []];
+let calibrated = false, sawMaxCounts = 0, lsb = 125e-6;
+let frozen = false, dirty = true, sweeps = 0, lastMsgT = 0;
+
+// ---------- static layer (drawn once / on resize / when saw max changes) ----------
+function resize() {
+  const r = gridCv.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
+  for (const cv of [gridCv, traceCv]) { cv.width = Math.round(r.width * dpr); cv.height = Math.round(r.height * dpr); }
+  for (const c of [gctx, tctx]) c.setTransform(dpr, 0, 0, dpr, 0, 0);
+  W = r.width; H = r.height; PW = W - M.l - M.r; PH = H - M.t - M.b;
+  drawGrid(); dirty = true;
+}
+const X = xn => M.l + xn * PW;                    // xn in 0..1 over the whole width
+const Y = v => M.t + PH - Math.min(Math.max(v / Y_MAX, 0), 1) * PH;
+
+function drawGrid() {
+  const g = gctx;
+  g.clearRect(0, 0, W, H);
+  g.fillStyle = css("--bg"); g.fillRect(0, 0, W, H);
+  g.strokeStyle = css("--grid"); g.lineWidth = 1; g.setLineDash([2, 4]);
+  g.fillStyle = css("--muted"); g.font = "11px ui-monospace, Menlo, Consolas, monospace";
+  g.textAlign = "right"; g.textBaseline = "middle";
+  for (let v = 0; v <= Y_MAX + 1e-6; v += Y_DIV) line(g, M.l, Y(v), M.l + PW, Y(v)), g.fillText(v.toFixed(1), M.l - 6, Y(v));
+  if (Math.abs(Y_MAX / Y_DIV - Math.round(Y_MAX / Y_DIV)) > 1e-6) line(g, M.l, Y(Y_MAX), M.l + PW, Y(Y_MAX)), g.fillText(Y_MAX.toFixed(1), M.l - 6, Y(Y_MAX));
+  for (let i = 0; i <= 8; i++) line(g, X(i / 8), M.t, X(i / 8), M.t + PH);   // 4 div per half
+  g.setLineDash([]);
+  g.strokeStyle = css("--div"); g.lineWidth = 1.5; line(g, X(0.5), M.t, X(0.5), M.t + PH);
+  g.strokeStyle = css("--line"); g.lineWidth = 1; g.strokeRect(M.l, M.t, PW, PH);
+  // x labels in saw volts (each half spans the full saw range)
+  // X-axis end labels
+  g.textBaseline = "top"; g.fillStyle = css("--text"); g.font = "12px ui-monospace, Menlo, Consolas, monospace";
+  g.textAlign = "left";  g.fillText(X_LEFT,  X(0), M.t + PH + 6);
+  g.textAlign = "right"; g.fillText(X_RIGHT, X(1), M.t + PH + 6);
+  g.font = "11px ui-monospace, Menlo, Consolas, monospace";
+  g.textAlign = "left";
+  g.fillStyle = css("--ch1"); g.fillText("CH1 · AIN0", M.l + 6, M.t + 4);
+  g.fillStyle = css("--ch2"); g.fillText("CH2 · AIN1", X(0.5) + 6, M.t + 4);
+}
+function line(g, x1, y1, x2, y2) { g.beginPath(); g.moveTo(x1, y1); g.lineTo(x2, y2); g.stroke(); }
+
+// ---------- dynamic layer ----------
+function drawTrace(pts, half, color, alpha) {
+  if (pts.length < 1) return;
+  const t = tctx, off = half * 0.5;
+  t.globalAlpha = alpha; t.strokeStyle = color; t.lineWidth = 1.6; t.lineJoin = "round";
+  t.beginPath();
+  t.moveTo(X(off + pts[0][0] * 0.5), Y(pts[0][1]));
+  for (let i = 1; i < pts.length; i++) t.lineTo(X(off + pts[i][0] * 0.5), Y(pts[i][1]));
+  t.stroke();
+  t.globalAlpha = 1;
+}
+function render() {
+  if (dirty) {
+    dirty = false;
+    tctx.clearRect(0, 0, W, H);
+    const c1 = css("--ch1"), c2 = css("--ch2");
+    if (!calibrated) {
+      tctx.fillStyle = css("--warn"); tctx.font = "15px ui-monospace, Menlo, Consolas, monospace";
+      tctx.textAlign = "center"; tctx.textBaseline = "middle";
+      tctx.fillText("learning sawtooth max…", M.l + PW / 2, M.t + PH / 2);
+    } else {
+      if ($("persist").checked) { drawTrace(prev[0], 0, c1, 0.3); drawTrace(prev[1], 1, c2, 0.3); }
+      drawTrace(cur[0], 0, c1, 1); drawTrace(cur[1], 1, c2, 1);
+      for (const [h, col] of [[0, c1], [1, c2]]) {        // beam spot
+        const p = cur[h][cur[h].length - 1]; if (!p) continue;
+        tctx.fillStyle = col; tctx.beginPath(); tctx.arc(X(h * 0.5 + p[0] * 0.5), Y(p[1]), 3, 0, 7); tctx.fill();
+      }
+    }
+  }
+  $("conn").className = "pill " + (performance.now() - lastMsgT < 1000 ? "ok" : "bad");
+  $("conn").textContent = performance.now() - lastMsgT < 1000 ? "receiving" : "no data";
+  requestAnimationFrame(render);
+}
+
+// ---------- data in ----------
+function ingest(m) {
+  lastMsgT = performance.now();
+  lsb = m.lsb;
+  $("rate").textContent = m.rate.toFixed(0) + " sets/s";
+  $("lost").textContent = m.lost;
+  $("src").textContent = m.src || "—";
+  $("sawmax").textContent = (m.sawMax * lsb).toFixed(3) + " V" + (m.state ? " (locked)" : " (tracking)");
+  const st = $("state");
+  st.textContent = m.state ? "LOCKED" : "LEARNING"; st.className = "pill " + (m.state ? "ok" : "warn");
+
+  const last = m.s[m.s.length - 1];
+  if (last && !(last[3] & F_ERR)) {
+    $("v1").textContent = (last[1] * lsb).toFixed(3) + " V";
+    $("v2").textContent = (last[2] * lsb).toFixed(3) + " V";
+    $("vs").textContent = (last[0] * lsb).toFixed(3) + " V";
+  }
+  if (frozen) return;
+
+  for (const [saw, a, b, f] of m.s) {
+    if (f & F_ERR) continue;
+    const cal = !!(f & F_CAL);
+    if (cal !== calibrated) {                      // lock / re-learn transition
+      calibrated = cal; cur = [[], []]; prev = [[], []];
+      if (cal) sawMaxCounts = m.sawMax;
+      drawGrid();
+    }
+    if (!cal) continue;
+    if (f & F_SWEEP) { prev = cur; cur = [[], []]; $("sweeps").textContent = ++sweeps; }
+    const xn = Math.min(Math.max(saw / sawMaxCounts, 0), 1);
+    cur[0].push([xn, a * lsb]);
+    cur[1].push([xn, b * lsb]);
+    if (cur[0].length > 20000) { prev = cur; cur = [[], []]; }   // no retrace? don't grow forever
+  }
+  dirty = true;
+}
+
+const es = new EventSource("/events");
+es.onmessage = e => ingest(JSON.parse(e.data));
+
+$("freeze").onclick = () => { frozen = !frozen; $("freeze").classList.toggle("on", frozen); $("freeze").textContent = frozen ? "Run" : "Freeze"; };
+$("clear").onclick = () => { cur = [[], []]; prev = [[], []]; dirty = true; };
+$("persist").onchange = () => { dirty = true; };
+window.addEventListener("resize", resize);
+resize();
+requestAnimationFrame(render);
+</script>
+</body>
+</html>
